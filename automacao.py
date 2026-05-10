@@ -155,7 +155,7 @@ def buscar_leads(setor, cidade, meta_leads):
     
     while leads_salvos < meta_leads:
         try:
-            coluna_ids = planilha.col_values(10) # Agora a ID volta para a coluna 10 (Endereço removido)
+            coluna_ids = planilha.col_values(11) # A ID está na coluna 11 (K) pois a coluna A da planilha é usada para outra coisa / vazia.
             res_maps = gmaps.places(query=f"{setor} em {cidade}", page_token=token) if token else gmaps.places(query=f"{setor} em {cidade}")
 
             results = res_maps.get('results', [])
