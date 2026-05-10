@@ -5,6 +5,7 @@ import time
 import os
 import re
 import urllib3
+import urllib.parse
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from googlesearch import search
@@ -79,25 +80,39 @@ def capturar_cnpj_no_google(nome_empresa, cidade):
             cnpj = re.sub(r'\D', '', match.group(0))
             if validar_cnpj(cnpj):
                 print(f"      🎯 CNPJ ENCONTRADO (Estratégia Direta): {cnpj}")
-                return cnpj
+                return cnpj, f"https://cnpj.biz/{cnpj}"
     except Exception as e:
         print(f"      ⚠️ Falha na Estratégia 1: {e}")
 
-    # ESTRATÉGIA 2: Fallback via DuckDuckGo (HTML bruto)
+    # ESTRATÉGIA 2: Fallback via Web Search (AOL)
     try:
-        url_ddg = "https://html.duckduckgo.com/html/"
-        res_ddg = requests.get(url_ddg, params={'q': f'{nome_limpo} {cidade} cnpj'}, headers=headers, timeout=12)
-        match_ddg = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', res_ddg.text)
-        if match_ddg:
-            cnpj = re.sub(r'\D', '', match_ddg.group(0))
-            if validar_cnpj(cnpj) and cnpj != "34013481030122":
-                print(f"      🎯 CNPJ ENCONTRADO (Estratégia 2): {cnpj}")
-                return cnpj
-    except:
-        pass
+        time.sleep(1) # Delay anti-bloqueio
+        url_search = "https://search.aol.com/aol/search"
+        res_search = requests.get(url_search, params={'q': f'{nome_limpo} {cidade} cnpj'}, headers=headers, timeout=12)
+        soup = BeautifulSoup(res_search.text, 'html.parser')
+        
+        for result in soup.find_all('div', class_='algo'):
+            text = result.get_text()
+            match_search = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', text)
+            if match_search:
+                cnpj = re.sub(r'\D', '', match_search.group(0))
+                if validar_cnpj(cnpj) and cnpj != "34013481030122":
+                    a_tag = result.find('a', href=True)
+                    link_cnpj = "N/A"
+                    if a_tag:
+                        href = a_tag['href']
+                        if 'RU=' in href:
+                            ru_encoded = href.split('RU=')[1].split('/RK=')[0]
+                            link_cnpj = urllib.parse.unquote(ru_encoded)
+                        else:
+                            link_cnpj = href
+                    print(f"      🎯 CNPJ ENCONTRADO (Web Search): {cnpj}")
+                    return cnpj, link_cnpj
+    except Exception as e:
+        print(f"      ⚠️ Falha na Estratégia 2: {e}")
 
     print(f"      ℹ️ CNPJ não localizado para {nome_limpo}")
-    return None
+    return None, "N/A"
 
 def buscar_decisor_brasil_api(cnpj_limpo):
     if not cnpj_limpo or not validar_cnpj(cnpj_limpo):
@@ -140,7 +155,7 @@ def buscar_leads(setor, cidade, meta_leads):
     
     while leads_salvos < meta_leads:
         try:
-            coluna_ids = planilha.col_values(10)
+            coluna_ids = planilha.col_values(10) # Agora a ID volta para a coluna 10 (Endereço removido)
             res_maps = gmaps.places(query=f"{setor} em {cidade}", page_token=token) if token else gmaps.places(query=f"{setor} em {cidade}")
 
             results = res_maps.get('results', [])
@@ -157,17 +172,17 @@ def buscar_leads(setor, cidade, meta_leads):
                     continue
 
                 print(f"\n💎 LEAD {leads_salvos + 1}: {nome}")
-                det = gmaps.place(place_id=pid, fields=['formatted_phone_number', 'website', 'formatted_address'])['result']
+                det = gmaps.place(place_id=pid, fields=['formatted_phone_number', 'website'])['result']
 
                 tel = det.get('formatted_phone_number', 'N/A')
                 site = det.get('website', 'N/A')
-                end = det.get('formatted_address', 'N/A')
 
                 insta = buscar_instagram_no_site(site)
-                cnpj_num = capturar_cnpj_no_google(nome, cidade)
-                cnpj_format, decisor = buscar_decisor_brasil_api(cnpj_num)
+                cnpj_num, link_cnpj = capturar_cnpj_no_google(nome, cidade)
+                _, decisor = buscar_decisor_brasil_api(cnpj_num)
 
-                planilha.append_row([nome, tel, site, insta, end, cidade, setor, cnpj_format, decisor, pid])
+                status_inicial = "Disponível"
+                planilha.append_row([nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid])
                 leads_salvos += 1
                 print(f"✅ Salvo com sucesso!")
                 
