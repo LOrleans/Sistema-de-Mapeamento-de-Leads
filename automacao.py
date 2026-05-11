@@ -193,8 +193,10 @@ def buscar_leads(setor, cidade, meta_leads):
             time.sleep(2) 
             
         except Exception as e:
-            print(f"❌ Erro no ciclo: {e}")
-            break
+            print(f"❌ Erro de conexão com o Google ou timeout: {e}")
+            print("⏳ Aguardando 10 segundos antes de tentar novamente...")
+            time.sleep(10)
+            continue
 
 print("--- SISTEMA DE MAPEAMENTO PROFISSIONAL V2 ---")
 s_in = input("Setor: ")
