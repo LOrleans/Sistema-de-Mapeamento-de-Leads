@@ -14,7 +14,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # Desativa avisos de certificado SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-load_dotenv()
+load_dotenv(override=True)
 
 API_KEY_MAPS = os.getenv("MAPS_API_KEY")
 NOME_PLANILHA = os.getenv("NOME_PLANILHA")
@@ -31,7 +31,8 @@ def iniciar_planilha():
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
         client = gspread.authorize(creds)
-        return client.open(NOME_PLANILHA).sheet1
+        planilha = client.open(NOME_PLANILHA)
+        return planilha.sheet1
     except Exception as e:
         print(f"❌ ERRO CRÍTICO (Planilha): {e}")
         exit()
@@ -41,7 +42,6 @@ gmaps = googlemaps.Client(key=API_KEY_MAPS)
 
 def buscar_instagram_no_site(url):
     if not url or url == 'N/A': return 'N/A'
-    print(f"   🌐 Acessando site: {url}")
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
     try:
         res = requests.get(url, timeout=10, headers=headers, verify=False)
@@ -49,10 +49,9 @@ def buscar_instagram_no_site(url):
         for a in soup.find_all('a', href=True):
             href = a['href'].lower()
             if 'instagram.com/' in href and all(x not in href for x in ['sharer', 'whatsapp', 'facebook', 'twitter']):
-                print(f"   📸 Instagram encontrado: {a['href']}")
                 return a['href']
-    except Exception as e:
-        print(f"   ⚠️ Erro ao varrer site: {e}")
+    except Exception:
+        pass
     return 'N/A'
 
 def capturar_cnpj_no_google(nome_empresa, cidade):
@@ -64,8 +63,6 @@ def capturar_cnpj_no_google(nome_empresa, cidade):
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
     }
     
-    print(f"   🔍 [ENRIQUECIMENTO] Buscando dados de: {nome_limpo}")
-
     # ESTRATÉGIA 1: Busca Direta (CNPJ.biz) - Evita o filtro dos buscadores
     try:
         url_procura = f"https://cnpj.biz/procura/{nome_limpo.replace(' ', '+')}+{cidade.replace(' ', '+')}"
@@ -79,10 +76,9 @@ def capturar_cnpj_no_google(nome_empresa, cidade):
         if match:
             cnpj = re.sub(r'\D', '', match.group(0))
             if validar_cnpj(cnpj):
-                print(f"      🎯 CNPJ ENCONTRADO (Estratégia Direta): {cnpj}")
                 return cnpj, f"https://cnpj.biz/{cnpj}"
-    except Exception as e:
-        print(f"      ⚠️ Falha na Estratégia 1: {e}")
+    except Exception:
+        pass
 
     # ESTRATÉGIA 2: Fallback via Web Search (AOL)
     try:
@@ -106,19 +102,16 @@ def capturar_cnpj_no_google(nome_empresa, cidade):
                             link_cnpj = urllib.parse.unquote(ru_encoded)
                         else:
                             link_cnpj = href
-                    print(f"      🎯 CNPJ ENCONTRADO (Web Search): {cnpj}")
                     return cnpj, link_cnpj
-    except Exception as e:
-        print(f"      ⚠️ Falha na Estratégia 2: {e}")
+    except Exception:
+        pass
 
-    print(f"      ℹ️ CNPJ não localizado para {nome_limpo}")
     return None, "N/A"
 
 def buscar_decisor_brasil_api(cnpj_limpo):
     if not cnpj_limpo or not validar_cnpj(cnpj_limpo):
         return "N/A", "N/A"
     
-    print(f"   🏢 Validando na Brasil API: {cnpj_limpo}")
     try:
         time.sleep(1) # Rate limit safety
         url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
@@ -138,17 +131,14 @@ def buscar_decisor_brasil_api(cnpj_limpo):
                 if nome_decisor == "Não informado":
                     nome_decisor = socios[0].get('nome_socio')
             
-            print(f"      👤 DECISOR: {nome_decisor}")
             return dados.get('cnpj'), str(nome_decisor).title()
-        else:
-            print(f"      ⚠️ Erro API: {res.status_code}")
-    except Exception as e:
-        print(f"      ⚠️ Erro conexão API: {e}")
+    except Exception:
+        pass
         
     return cnpj_limpo, "N/A"
 
 def buscar_leads(setor, cidade, meta_leads):
-    print(f"\n" + "="*50 + f"\n🚀 INICIANDO: {setor} @ {cidade}\n" + "="*50)
+    print(f"\n🚀 INICIANDO MAPEAMENTO: {setor} em {cidade} (Meta: {meta_leads} leads)")
     
     leads_salvos = 0
     token = None
@@ -168,10 +158,8 @@ def buscar_leads(setor, cidade, meta_leads):
                 nome = lead.get('name')
 
                 if pid in coluna_ids:
-                    print(f"⚠️ Pular: {nome}")
                     continue
 
-                print(f"\n💎 LEAD {leads_salvos + 1}: {nome}")
                 det = gmaps.place(place_id=pid, fields=['formatted_phone_number', 'website'])['result']
 
                 tel = det.get('formatted_phone_number', 'N/A')
@@ -182,9 +170,19 @@ def buscar_leads(setor, cidade, meta_leads):
                 _, decisor = buscar_decisor_brasil_api(cnpj_num)
 
                 status_inicial = "Disponível"
-                planilha.append_row([nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid])
+                
+                # Encontra a primeira linha vazia na Coluna B (Nome do Lead)
+                col_b = planilha.col_values(2)
+                proxima_linha = len(col_b) + 1
+                
+                # Insere os dados exatamente das colunas B até K
+                planilha.update(
+                    range_name=f"B{proxima_linha}:K{proxima_linha}", 
+                    values=[[nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid]]
+                )
+                
                 leads_salvos += 1
-                print(f"✅ Salvo com sucesso!")
+                print(f"📍 [{leads_salvos}/{meta_leads}] {nome} -> Mapeado com sucesso!")
                 
                 time.sleep(2)
 
@@ -198,6 +196,8 @@ def buscar_leads(setor, cidade, meta_leads):
             time.sleep(10)
             continue
 
+    print(f"✨ Mapeamento finalizado em {cidade}! Total de {leads_salvos} leads mapeados.")
+
 print("--- SISTEMA DE MAPEAMENTO PROFISSIONAL V2 ---")
 s_in = input("Setor: ")
 c_in = input("Cidade: ").split(',')
@@ -205,3 +205,5 @@ q_in = int(input("Quantidade de Leads desejados: "))
 
 for cid in c_in:
     buscar_leads(s_in, cid.strip(), q_in)
+
+print("\n🏆 Processo completo! Todos os leads foram processados com sucesso.")
