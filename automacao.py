@@ -10,6 +10,9 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from googlesearch import search
 from oauth2client.service_account import ServiceAccountCredentials
+import sys
+
+sys.stdout.reconfigure(encoding='utf-8')
 
 # Desativa avisos de certificado SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -137,6 +140,86 @@ def buscar_decisor_brasil_api(cnpj_limpo):
         
     return cnpj_limpo, "N/A"
 
+def cadastrar_lead_pipefy(dados):
+    token = os.getenv("PIPEFY_TOKEN")
+    pipe_id = os.getenv("PIPEFY_PIPE_ID")
+    
+    if not token or not pipe_id:
+        return
+        
+    url = "https://api.pipefy.com/graphql"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    # 1. Criar Record na Tabela Banco de dados de Leads
+    query_record = '''
+    mutation CreateRecord($input: CreateTableRecordInput!) {
+      createTableRecord(input: $input) {
+        table_record { id }
+      }
+    }
+    '''
+    variables_record = {
+        "input": {
+            "table_id": "OSsaOrTh",
+            "fields_attributes": [
+                {"field_id": "nome", "field_value": dados.get('nome', 'N/A')},
+                {"field_id": "tipo_de_empresa", "field_value": "Empresa Sênior"},
+                {"field_id": "tamanho_da_empresa", "field_value": "Sem classificação"},
+                {"field_id": "servi_os_de_interesse", "field_value": ["Sistema Web"]},
+                {"field_id": "rea_de_atua_o", "field_value": "Prestação de Serviços"},
+                {"field_id": "nome_do_contato", "field_value": dados.get('decisor', 'N/A')},
+                {"field_id": "criado_por", "field_value": ["306852816"]}, # 306852816 é o ID do Lucas Orleans
+                {"field_id": "telefone_de_contato", "field_value": dados.get('telefone', 'N/A')},
+                {"field_id": "p_gina_do_instagram", "field_value": dados.get('instagram', 'N/A')},
+                {"field_id": "link_dos_dados_do_cnpj", "field_value": dados.get('link_cnpj', 'N/A')},
+                {"field_id": "endere_o_comercial", "field_value": dados.get('cidade', 'N/A')}
+            ]
+        }
+    }
+    
+    try:
+        res_record = requests.post(url, headers=headers, json={'query': query_record, 'variables': variables_record})
+        record_data = res_record.json()
+        
+        if 'errors' in record_data:
+            print(f"⚠️ Erro ao criar registro na tabela do Pipefy: {record_data['errors']}")
+            return
+
+        data_obj = record_data.get('data')
+        if not data_obj:
+            return
+            
+        record_id = data_obj.get('createTableRecord', {}).get('table_record', {}).get('id')
+        
+        # 2. Criar Card no Pipe conectando ao Record criado
+        if record_id:
+            query_card = '''
+            mutation CreateCard($input: CreateCardInput!) {
+              createCard(input: $input) {
+                card { id }
+              }
+            }
+            '''
+            variables_card = {
+                "input": {
+                    "pipe_id": int(pipe_id),
+                    "fields_attributes": [
+                        {"field_id": "lead", "field_value": [record_id]},
+                        {"field_id": "quantidade_de_vezes_que_j_entramos_em_contato", "field_value": 0}
+                    ]
+                }
+            }
+            res_card = requests.post(url, headers=headers, json={'query': query_card, 'variables': variables_card})
+            card_data = res_card.json()
+            if 'errors' in card_data:
+                print(f"⚠️ Erro ao criar card no Pipefy: {card_data['errors']}")
+                
+    except Exception as e:
+        print(f"⚠️ Erro de conexão ao cadastrar no Pipefy: {e}")
+
 def buscar_leads(setor, cidade, meta_leads):
     print(f"\n🚀 INICIANDO MAPEAMENTO: {setor} em {cidade} (Meta: {meta_leads} leads)")
     
@@ -180,6 +263,19 @@ def buscar_leads(setor, cidade, meta_leads):
                     range_name=f"B{proxima_linha}:K{proxima_linha}", 
                     values=[[nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid]]
                 )
+                
+                # [SUSPENSO] Cadastro no Pipefy
+                # dados_lead = {
+                #     "nome": nome,
+                #     "telefone": tel,
+                #     "site": site,
+                #     "instagram": insta,
+                #     "cidade": cidade,
+                #     "setor": setor,
+                #     "link_cnpj": link_cnpj,
+                #     "decisor": decisor
+                # }
+                # cadastrar_lead_pipefy(dados_lead)
                 
                 leads_salvos += 1
                 print(f"📍 [{leads_salvos}/{meta_leads}] {nome} -> Mapeado com sucesso!")
