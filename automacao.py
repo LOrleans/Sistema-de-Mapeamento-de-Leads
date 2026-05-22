@@ -90,6 +90,9 @@ def capturar_cnpj_no_google(nome_empresa, cidade):
         res_search = requests.get(url_search, params={'q': f'{nome_limpo} {cidade} cnpj'}, headers=headers, timeout=12)
         soup = BeautifulSoup(res_search.text, 'html.parser')
         
+        fallback_cnpj = None
+        fallback_link = "N/A"
+        
         for result in soup.find_all('div', class_='algo'):
             text = result.get_text()
             match_search = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', text)
@@ -105,15 +108,37 @@ def capturar_cnpj_no_google(nome_empresa, cidade):
                             link_cnpj = urllib.parse.unquote(ru_encoded)
                         else:
                             link_cnpj = href
-                    return cnpj, link_cnpj
+                    
+                    # Prioridade: Se o link for do cnpj.biz, retorna ele na hora
+                    if 'cnpj.biz' in link_cnpj:
+                        return cnpj, link_cnpj
+                    
+                    # Guarda o primeiro resultado válido de outros sites como plano B
+                    if not fallback_cnpj:
+                        fallback_cnpj = cnpj
+                        fallback_link = link_cnpj
+                        
+        if fallback_cnpj:
+            return fallback_cnpj, fallback_link
+            
     except Exception:
         pass
 
     return None, "N/A"
 
-def buscar_decisor_brasil_api(cnpj_limpo):
+def buscar_dados_completos_cnpj(cnpj_limpo):
+    resultado = {
+        "cnpj": cnpj_limpo,
+        "decisor": "N/A",
+        "tipo_empresa": "Empresa Sênior",
+        # Estrutura pronta para requisitar mais informações no futuro
+        "razao_social": "N/A",
+        "capital_social": "N/A",
+        "situacao_cadastral": "N/A"
+    }
+    
     if not cnpj_limpo or not validar_cnpj(cnpj_limpo):
-        return "N/A", "N/A"
+        return resultado
     
     try:
         time.sleep(1) # Rate limit safety
@@ -122,9 +147,10 @@ def buscar_decisor_brasil_api(cnpj_limpo):
         
         if res.status_code == 200:
             dados = res.json()
+            
+            # 1. Decisor
             socios = dados.get('qsa', [])
             nome_decisor = "Não informado"
-            
             if socios:
                 for s in socios:
                     qualif = str(s.get('qualificacao_socio', '')).upper()
@@ -133,12 +159,29 @@ def buscar_decisor_brasil_api(cnpj_limpo):
                         break
                 if nome_decisor == "Não informado":
                     nome_decisor = socios[0].get('nome_socio')
+            resultado["decisor"] = str(nome_decisor).title() if nome_decisor != "Não informado" else "N/A"
             
-            return dados.get('cnpj'), str(nome_decisor).title()
+            # 2. Tipo de Empresa (Mapeamento para o Pipefy)
+            natureza = str(dados.get('natureza_juridica', '')).upper()
+            if dados.get('opcao_pelo_mei'):
+                resultado["tipo_empresa"] = "MEI"
+            elif "EMPRESÁRIO INDIVIDUAL" in natureza or "EMPRESARIO INDIVIDUAL" in natureza:
+                resultado["tipo_empresa"] = "Empresário Individual"
+            elif any(x in natureza for x in ["ASSOCIAÇÃO PRIVADA", "ASSOCIACAO PRIVADA", "FUNDAÇÃO PRIVADA", "ORGANIZAÇÃO RELIGIOSA"]):
+                resultado["tipo_empresa"] = "ONG"
+            else:
+                # Assumimos 'Empresa Sênior' para LTDA, S/A, EIRELI, etc.
+                resultado["tipo_empresa"] = "Empresa Sênior"
+                
+            # 3. Mais informações prontas para uso futuro
+            resultado["razao_social"] = dados.get('razao_social', 'N/A')
+            resultado["capital_social"] = dados.get('capital_social', 'N/A')
+            resultado["situacao_cadastral"] = dados.get('descricao_situacao_cadastral', 'N/A')
+            
     except Exception:
         pass
         
-    return cnpj_limpo, "N/A"
+    return resultado
 
 def cadastrar_lead_pipefy(dados):
     token = os.getenv("PIPEFY_TOKEN")
@@ -166,7 +209,7 @@ def cadastrar_lead_pipefy(dados):
             "table_id": "OSsaOrTh",
             "fields_attributes": [
                 {"field_id": "nome", "field_value": dados.get('nome', 'N/A')},
-                {"field_id": "tipo_de_empresa", "field_value": "Empresa Sênior"},
+                {"field_id": "tipo_de_empresa", "field_value": dados.get('tipo_empresa', 'Empresa Sênior')},
                 {"field_id": "tamanho_da_empresa", "field_value": "Sem classificação"},
                 {"field_id": "servi_os_de_interesse", "field_value": ["Sistema Web"]},
                 {"field_id": "rea_de_atua_o", "field_value": "Prestação de Serviços"},
@@ -250,7 +293,13 @@ def buscar_leads(setor, cidade, meta_leads):
 
                 insta = buscar_instagram_no_site(site)
                 cnpj_num, link_cnpj = capturar_cnpj_no_google(nome, cidade)
-                _, decisor = buscar_decisor_brasil_api(cnpj_num)
+                
+                dados_cnpj = buscar_dados_completos_cnpj(cnpj_num)
+                decisor = dados_cnpj["decisor"]
+                tipo_empresa = dados_cnpj["tipo_empresa"]
+                razao_social = dados_cnpj["razao_social"]
+                capital_social = dados_cnpj["capital_social"]
+                situacao_cadastral = dados_cnpj["situacao_cadastral"]
 
                 status_inicial = "Disponível"
                 
@@ -258,10 +307,10 @@ def buscar_leads(setor, cidade, meta_leads):
                 col_b = planilha.col_values(2)
                 proxima_linha = len(col_b) + 1
                 
-                # Insere os dados exatamente das colunas B até K
+                # Insere os dados exatamente das colunas B até O
                 planilha.update(
-                    range_name=f"B{proxima_linha}:K{proxima_linha}", 
-                    values=[[nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid]]
+                    range_name=f"B{proxima_linha}:O{proxima_linha}", 
+                    values=[[nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid, tipo_empresa, razao_social, capital_social, situacao_cadastral]]
                 )
                 
                 # [SUSPENSO] Cadastro no Pipefy
@@ -273,7 +322,8 @@ def buscar_leads(setor, cidade, meta_leads):
                 #     "cidade": cidade,
                 #     "setor": setor,
                 #     "link_cnpj": link_cnpj,
-                #     "decisor": decisor
+                #     "decisor": decisor,
+                #     "tipo_empresa": tipo_empresa
                 # }
                 # cadastrar_lead_pipefy(dados_lead)
                 
