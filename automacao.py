@@ -131,6 +131,7 @@ def buscar_dados_completos_cnpj(cnpj_limpo):
         "cnpj": cnpj_limpo,
         "decisor": "N/A",
         "tipo_empresa": "Empresa Sênior",
+        "tamanho_empresa": "Sem classificação",
         # Estrutura pronta para requisitar mais informações no futuro
         "razao_social": "N/A",
         "capital_social": "N/A",
@@ -173,7 +174,17 @@ def buscar_dados_completos_cnpj(cnpj_limpo):
                 # Assumimos 'Empresa Sênior' para LTDA, S/A, EIRELI, etc.
                 resultado["tipo_empresa"] = "Empresa Sênior"
                 
-            # 3. Mais informações prontas para uso futuro
+            # 3. Tamanho da Empresa (Mapeamento para o Pipefy)
+            porte = str(dados.get('porte', '')).upper()
+            map_porte = {
+                "MICRO EMPRESA": "Microempresa (ME)",
+                "EMPRESA DE PEQUENO PORTE": "Empresa de pequeno porte (EPP)",
+                "MEDIA EMPRESA": "Média empresa",
+                "GRANDE EMPRESA": "Grande empresa"
+            }
+            resultado["tamanho_empresa"] = map_porte.get(porte, "Sem classificação") if porte else "Sem classificação"
+                
+            # 4. Mais informações prontas para uso futuro
             resultado["razao_social"] = dados.get('razao_social', 'N/A')
             resultado["capital_social"] = dados.get('capital_social', 'N/A')
             resultado["situacao_cadastral"] = dados.get('descricao_situacao_cadastral', 'N/A')
@@ -210,7 +221,7 @@ def cadastrar_lead_pipefy(dados):
             "fields_attributes": [
                 {"field_id": "nome", "field_value": dados.get('nome', 'N/A')},
                 {"field_id": "tipo_de_empresa", "field_value": dados.get('tipo_empresa', 'Empresa Sênior')},
-                {"field_id": "tamanho_da_empresa", "field_value": "Sem classificação"},
+                {"field_id": "tamanho_da_empresa", "field_value": dados.get('tamanho_empresa', 'Sem classificação')},
                 {"field_id": "servi_os_de_interesse", "field_value": ["Sistema Web"]},
                 {"field_id": "rea_de_atua_o", "field_value": "Prestação de Serviços"},
                 {"field_id": "nome_do_contato", "field_value": dados.get('decisor', 'N/A')},
@@ -272,7 +283,7 @@ def buscar_leads(setor, cidade, meta_leads):
     while leads_salvos < meta_leads:
         try:
             coluna_ids = planilha.col_values(11) # A ID está na coluna 11 (K) pois a coluna A da planilha é usada para outra coisa / vazia.
-            res_maps = gmaps.places(query=f"{setor} em {cidade}", page_token=token) if token else gmaps.places(query=f"{setor} em {cidade}")
+            res_maps = gmaps.places(page_token=token) if token else gmaps.places(query=f"{setor} em {cidade}")
 
             results = res_maps.get('results', [])
             if not results: break
@@ -297,9 +308,15 @@ def buscar_leads(setor, cidade, meta_leads):
                 dados_cnpj = buscar_dados_completos_cnpj(cnpj_num)
                 decisor = dados_cnpj["decisor"]
                 tipo_empresa = dados_cnpj["tipo_empresa"]
+                tamanho_empresa = dados_cnpj["tamanho_empresa"]
                 razao_social = dados_cnpj["razao_social"]
                 capital_social = dados_cnpj["capital_social"]
                 situacao_cadastral = dados_cnpj["situacao_cadastral"]
+
+                # Condicional de Descarte: Só descarta se TODOS estiverem ausentes.
+                if decisor == "N/A" and tel == "N/A" and insta == "N/A" and link_cnpj == "N/A":
+                    print(f"❌ [{leads_salvos}/{meta_leads}] {nome} -> Descartado (Sem dados suficientes).")
+                    continue
 
                 status_inicial = "Disponível"
                 
@@ -313,19 +330,20 @@ def buscar_leads(setor, cidade, meta_leads):
                     values=[[nome, status_inicial, tel, site, insta, cidade, setor, link_cnpj, decisor, pid, tipo_empresa, razao_social, capital_social, situacao_cadastral]]
                 )
                 
-                # [SUSPENSO] Cadastro no Pipefy
-                # dados_lead = {
-                #     "nome": nome,
-                #     "telefone": tel,
-                #     "site": site,
-                #     "instagram": insta,
-                #     "cidade": cidade,
-                #     "setor": setor,
-                #     "link_cnpj": link_cnpj,
-                #     "decisor": decisor,
-                #     "tipo_empresa": tipo_empresa
-                # }
-                # cadastrar_lead_pipefy(dados_lead)
+                # Cadastro no Pipefy
+                dados_lead = {
+                    "nome": nome,
+                    "telefone": tel,
+                    "site": site,
+                    "instagram": insta,
+                    "cidade": cidade,
+                    "setor": setor,
+                    "link_cnpj": link_cnpj,
+                    "decisor": decisor,
+                    "tipo_empresa": tipo_empresa,
+                    "tamanho_empresa": tamanho_empresa
+                }
+                cadastrar_lead_pipefy(dados_lead)
                 
                 leads_salvos += 1
                 print(f"📍 [{leads_salvos}/{meta_leads}] {nome} -> Mapeado com sucesso!")
@@ -344,12 +362,13 @@ def buscar_leads(setor, cidade, meta_leads):
 
     print(f"✨ Mapeamento finalizado em {cidade}! Total de {leads_salvos} leads mapeados.")
 
-print("--- SISTEMA DE MAPEAMENTO PROFISSIONAL V2 ---")
-s_in = input("Setor: ")
-c_in = input("Cidade: ").split(',')
-q_in = int(input("Quantidade de Leads desejados: "))
+if __name__ == '__main__':
+    print("--- SISTEMA DE MAPEAMENTO PROFISSIONAL V2 ---")
+    s_in = input("Setor: ")
+    c_in = input("Cidade: ").split(',')
+    q_in = int(input("Quantidade de Leads desejados: "))
 
-for cid in c_in:
-    buscar_leads(s_in, cid.strip(), q_in)
+    for cid in c_in:
+        buscar_leads(s_in, cid.strip(), q_in)
 
-print("\n🏆 Processo completo! Todos os leads foram processados com sucesso.")
+    print("\n🏆 Processo completo! Todos os leads foram processados com sucesso.")
