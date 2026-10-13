@@ -1,4 +1,3 @@
-import googlemaps
 import gspread
 import requests
 import time
@@ -8,7 +7,6 @@ import urllib3
 import urllib.parse
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from googlesearch import search
 from oauth2client.service_account import ServiceAccountCredentials
 import sys
 
@@ -21,6 +19,50 @@ load_dotenv(override=True)
 
 API_KEY_MAPS = os.getenv("MAPS_API_KEY")
 NOME_PLANILHA = os.getenv("NOME_PLANILHA")
+
+# --- Places API (New) ---
+PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
+PLACES_FIELD_MASK = ",".join([
+    "places.id",
+    "places.displayName",
+    "places.nationalPhoneNumber",
+    "places.websiteUri",
+    "places.businessStatus",
+    "nextPageToken",
+])
+MAX_FALHAS_SEGUIDAS = 3
+
+
+class ErroPermanenteMaps(Exception):
+    """Erro que não adianta tentar de novo (chave inválida, API desativada, sem faturamento...)."""
+
+
+def buscar_places(texto, page_token=None):
+    body = {
+        "textQuery": texto,
+        "languageCode": "pt-BR",
+        "regionCode": "BR",
+        "pageSize": 20,
+    }
+    if page_token:
+        body["pageToken"] = page_token
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": API_KEY_MAPS,
+        "X-Goog-FieldMask": PLACES_FIELD_MASK,
+    }
+    res = requests.post(PLACES_URL, json=body, headers=headers, timeout=20)
+
+    if res.status_code in (400, 401, 403):
+        try:
+            msg = res.json().get("error", {}).get("message", res.text)
+        except ValueError:
+            msg = res.text
+        raise ErroPermanenteMaps(f"HTTP {res.status_code} - {msg[:400]}")
+
+    res.raise_for_status()
+    return res.json()
 
 def validar_cnpj(cnpj):
     """Verifica se o CNPJ tem 14 dígitos e não é uma sequência repetida óbvia."""
@@ -40,8 +82,11 @@ def iniciar_planilha():
         print(f"❌ ERRO CRÍTICO (Planilha): {e}")
         exit()
 
+if not API_KEY_MAPS:
+    print("❌ ERRO CRÍTICO: MAPS_API_KEY não encontrada no arquivo .env")
+    exit()
+
 planilha = iniciar_planilha()
-gmaps = googlemaps.Client(key=API_KEY_MAPS)
 
 def buscar_instagram_no_site(url):
     if not url or url == 'N/A': return 'N/A'
@@ -279,28 +324,32 @@ def buscar_leads(setor, cidade, meta_leads):
     
     leads_salvos = 0
     token = None
-    
+    falhas_seguidas = 0
+
     while leads_salvos < meta_leads:
         try:
             coluna_ids = planilha.col_values(11) # A ID está na coluna 11 (K) pois a coluna A da planilha é usada para outra coisa / vazia.
-            res_maps = gmaps.places(page_token=token) if token else gmaps.places(query=f"{setor} em {cidade}")
+            res_maps = buscar_places(f"{setor} em {cidade}", page_token=token)
 
-            results = res_maps.get('results', [])
+            results = res_maps.get('places', [])
             if not results: break
 
             for lead in results:
                 if leads_salvos >= meta_leads: break
-                
-                pid = lead['place_id']
-                nome = lead.get('name')
 
-                if pid in coluna_ids:
+                pid = lead.get('id')
+                nome = lead.get('displayName', {}).get('text', 'N/A')
+
+                if not pid or pid in coluna_ids:
                     continue
 
-                det = gmaps.place(place_id=pid, fields=['formatted_phone_number', 'website'])['result']
+                # Pula empresas que o Google marca como fechadas de vez
+                if lead.get('businessStatus') == 'CLOSED_PERMANENTLY':
+                    print(f"⏭️  {nome} -> fechada permanentemente, ignorada.")
+                    continue
 
-                tel = det.get('formatted_phone_number', 'N/A')
-                site = det.get('website', 'N/A')
+                tel = lead.get('nationalPhoneNumber', 'N/A')
+                site = lead.get('websiteUri', 'N/A')
 
                 insta = buscar_instagram_no_site(site)
                 cnpj_num, link_cnpj = capturar_cnpj_no_google(nome, cidade)
@@ -350,16 +399,28 @@ def buscar_leads(setor, cidade, meta_leads):
                 
                 time.sleep(2)
 
-            token = res_maps.get('next_page_token')
+            falhas_seguidas = 0
+            token = res_maps.get('nextPageToken')
             if not token: break
-            time.sleep(2) 
-            
+            time.sleep(2)
+
+        except ErroPermanenteMaps as e:
+            print(f"❌ O Google recusou a busca: {e}")
+            print("   Confira se a 'Places API (New)' está ativada no projeto e liberada nas restrições da chave.")
+            return
+
         except Exception as e:
+            falhas_seguidas += 1
+            if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
+                print(f"❌ {falhas_seguidas} falhas seguidas ({e}). Encerrando {cidade} para não ficar em loop.")
+                return
             print(f"❌ Erro de conexão com o Google ou timeout: {e}")
-            print("⏳ Aguardando 10 segundos antes de tentar novamente...")
+            print(f"⏳ Aguardando 10 segundos antes de tentar novamente... ({falhas_seguidas}/{MAX_FALHAS_SEGUIDAS})")
             time.sleep(10)
             continue
 
+    if leads_salvos < meta_leads:
+        print(f"ℹ️  O Google devolve no máximo 60 resultados por busca. Para mais leads, busque por bairro (ex.: 'Ponta Negra, Natal').")
     print(f"✨ Mapeamento finalizado em {cidade}! Total de {leads_salvos} leads mapeados.")
 
 if __name__ == '__main__':
